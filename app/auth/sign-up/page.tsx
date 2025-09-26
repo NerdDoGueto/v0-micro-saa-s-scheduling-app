@@ -7,10 +7,10 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Calendar } from "lucide-react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useState } from "react"
-import { Calendar } from "lucide-react"
 
 export default function SignUpPage() {
   const [email, setEmail] = useState("")
@@ -34,8 +34,8 @@ export default function SignUpPage() {
       return
     }
 
-    if (password.length < 6) {
-      setError("Password must be at least 6 characters long")
+    if (username.length < 3) {
+      setError("Username must be at least 3 characters long")
       setIsLoading(false)
       return
     }
@@ -48,7 +48,7 @@ export default function SignUpPage() {
           emailRedirectTo: process.env.NEXT_PUBLIC_DEV_SUPABASE_REDIRECT_URL || `${window.location.origin}/dashboard`,
           data: {
             full_name: fullName,
-            username: username || email.split("@")[0],
+            username: username.toLowerCase(),
           },
         },
       })
@@ -64,87 +64,92 @@ export default function SignUpPage() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800 p-6">
       <div className="w-full max-w-md">
-        <div className="flex flex-col items-center mb-8">
-          <Calendar className="h-12 w-12 text-blue-600 mb-4" />
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Bookly-lite</h1>
+        <div className="flex flex-col gap-6">
+          {/* Logo */}
+          <div className="flex items-center justify-center space-x-2 mb-8">
+            <Calendar className="h-8 w-8 text-blue-600" />
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Bookly-lite</h1>
+          </div>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-2xl">Create your account</CardTitle>
+              <CardDescription>Get started with your personalized booking page</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <form onSubmit={handleSignUp}>
+                <div className="flex flex-col gap-4">
+                  <div className="grid gap-2">
+                    <Label htmlFor="fullName">Full Name</Label>
+                    <Input
+                      id="fullName"
+                      type="text"
+                      placeholder="John Doe"
+                      required
+                      value={fullName}
+                      onChange={(e) => setFullName(e.target.value)}
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="username">Username</Label>
+                    <Input
+                      id="username"
+                      type="text"
+                      placeholder="johndoe"
+                      required
+                      value={username}
+                      onChange={(e) => setUsername(e.target.value.toLowerCase())}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Your booking page will be: bookly-lite.com/u/{username || "username"}
+                    </p>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="email">Email</Label>
+                    <Input
+                      id="email"
+                      type="email"
+                      placeholder="m@example.com"
+                      required
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="password">Password</Label>
+                    <Input
+                      id="password"
+                      type="password"
+                      required
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="confirmPassword">Confirm Password</Label>
+                    <Input
+                      id="confirmPassword"
+                      type="password"
+                      required
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                    />
+                  </div>
+                  {error && <p className="text-sm text-destructive">{error}</p>}
+                  <Button type="submit" className="w-full" disabled={isLoading}>
+                    {isLoading ? "Creating account..." : "Create Account"}
+                  </Button>
+                </div>
+                <div className="mt-4 text-center text-sm">
+                  Already have an account?{" "}
+                  <Link href="/auth/login" className="underline underline-offset-4 text-blue-600 hover:text-blue-800">
+                    Sign in
+                  </Link>
+                </div>
+              </form>
+            </CardContent>
+          </Card>
         </div>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-2xl text-center">Create your account</CardTitle>
-            <CardDescription className="text-center">Start scheduling appointments in minutes</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <form onSubmit={handleSignUp} className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="fullName">Full Name</Label>
-                <Input
-                  id="fullName"
-                  type="text"
-                  placeholder="John Doe"
-                  required
-                  value={fullName}
-                  onChange={(e) => setFullName(e.target.value)}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="username">Username</Label>
-                <Input
-                  id="username"
-                  type="text"
-                  placeholder="johndoe"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                />
-                <p className="text-xs text-gray-500">
-                  Your booking page will be: bookly-lite.com/u/{username || "username"}
-                </p>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="email">Email</Label>
-                <Input
-                  id="email"
-                  type="email"
-                  placeholder="you@example.com"
-                  required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="password">Password</Label>
-                <Input
-                  id="password"
-                  type="password"
-                  required
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="confirmPassword">Confirm Password</Label>
-                <Input
-                  id="confirmPassword"
-                  type="password"
-                  required
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                />
-              </div>
-              {error && <div className="text-sm text-red-600 bg-red-50 dark:bg-red-900/20 p-3 rounded-md">{error}</div>}
-              <Button type="submit" className="w-full" disabled={isLoading}>
-                {isLoading ? "Creating account..." : "Create Account"}
-              </Button>
-            </form>
-
-            <div className="mt-6 text-center text-sm">
-              Already have an account?{" "}
-              <Link href="/auth/login" className="text-blue-600 hover:underline font-medium">
-                Sign in
-              </Link>
-            </div>
-          </CardContent>
-        </Card>
       </div>
     </div>
   )

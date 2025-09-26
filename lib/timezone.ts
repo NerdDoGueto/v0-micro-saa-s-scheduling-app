@@ -1,44 +1,70 @@
-import { format, toZonedTime, fromZonedTime } from "date-fns-tz"
+/**
+ * Timezone utilities for handling booking times across different timezones
+ */
 
-export function convertToUserTimezone(date: Date, timezone: string): Date {
-  return toZonedTime(date, timezone)
-}
-
-export function convertFromUserTimezone(date: Date, timezone: string): Date {
-  return fromZonedTime(date, timezone)
-}
-
-export function formatInTimezone(date: Date, timezone: string, formatStr = "yyyy-MM-dd HH:mm:ss"): string {
-  const zonedDate = toZonedTime(date, timezone)
-  return format(zonedDate, formatStr, { timeZone: timezone })
-}
-
-export function getCurrentTimeInTimezone(timezone: string): Date {
-  return toZonedTime(new Date(), timezone)
-}
-
-export function createDateInTimezone(dateString: string, timeString: string, timezone: string): Date {
-  const dateTimeString = `${dateString}T${timeString}`
-  const localDate = new Date(dateTimeString)
-  return fromZonedTime(localDate, timezone)
-}
-
-export function isValidTimezone(timezone: string): boolean {
+export function convertToUserTimezone(utcTime: string, timezone: string): string {
   try {
-    Intl.DateTimeFormat(undefined, { timeZone: timezone })
-    return true
-  } catch {
-    return false
+    const date = new Date(`2000-01-01T${utcTime}Z`)
+    return date.toLocaleTimeString("en-US", {
+      timeZone: timezone,
+      hour12: false,
+      hour: "2-digit",
+      minute: "2-digit",
+    })
+  } catch (error) {
+    console.error("Error converting timezone:", error)
+    return utcTime
   }
 }
 
-export function getTimezoneOffset(timezone: string): string {
-  const now = new Date()
-  const utc = new Date(now.getTime() + now.getTimezoneOffset() * 60000)
-  const targetTime = new Date(utc.toLocaleString("en-US", { timeZone: timezone }))
-  const diff = targetTime.getTime() - utc.getTime()
-  const hours = Math.floor(Math.abs(diff) / (1000 * 60 * 60))
-  const minutes = Math.floor((Math.abs(diff) % (1000 * 60 * 60)) / (1000 * 60))
-  const sign = diff >= 0 ? "+" : "-"
-  return `${sign}${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}`
+export function convertFromUserTimezone(localTime: string, timezone: string): string {
+  try {
+    // Create a date in the user's timezone
+    const today = new Date().toISOString().split("T")[0]
+    const localDateTime = new Date(`${today}T${localTime}`)
+
+    // Get the timezone offset
+    const utcTime = new Date(localDateTime.toLocaleString("en-US", { timeZone: "UTC" }))
+    const userTime = new Date(localDateTime.toLocaleString("en-US", { timeZone: timezone }))
+    const offset = utcTime.getTime() - userTime.getTime()
+
+    // Apply offset to get UTC time
+    const utcDateTime = new Date(localDateTime.getTime() + offset)
+
+    return utcDateTime.toTimeString().slice(0, 5)
+  } catch (error) {
+    console.error("Error converting from timezone:", error)
+    return localTime
+  }
+}
+
+export function getTimezoneOffset(timezone: string): number {
+  try {
+    const now = new Date()
+    const utc = new Date(now.toLocaleString("en-US", { timeZone: "UTC" }))
+    const local = new Date(now.toLocaleString("en-US", { timeZone: timezone }))
+    return (utc.getTime() - local.getTime()) / (1000 * 60) // Return offset in minutes
+  } catch (error) {
+    console.error("Error getting timezone offset:", error)
+    return 0
+  }
+}
+
+export function formatTimeInTimezone(time: string, timezone: string): string {
+  try {
+    const date = new Date(`2000-01-01T${time}`)
+    return date.toLocaleTimeString("en-US", {
+      timeZone: timezone,
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    })
+  } catch (error) {
+    console.error("Error formatting time in timezone:", error)
+    return new Date(`2000-01-01T${time}`).toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    })
+  }
 }

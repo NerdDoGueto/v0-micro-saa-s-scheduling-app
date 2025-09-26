@@ -1,238 +1,204 @@
 import { createClient } from "@/lib/supabase/server"
-import { addMinutes, isBefore, isAfter, isEqual } from "date-fns"
 
-export interface BookingConflict {
-  type: "overlap" | "buffer_violation" | "time_slot_unavailable" | "past_booking"
-  message: string
-  conflictingBooking?: any
+interface TimeSlot {
+  id: string
+  start_time: string
+  end_time: string
+  duration_minutes: number
+  buffer_minutes: number
 }
 
-export interface ValidationResult {
-  isValid: boolean
-  conflicts: BookingConflict[]
+interface BookingConflict {
+  hasConflict: boolean
+  conflictingBooking?: {
+    id: string
+    guest_name: string
+    start_time: string
+    end_time: string
+  }
+  message?: string
 }
 
-export async function validateBookingTime(
+/**
+ * Check for booking conflicts including buffer time
+ */
+export async function checkBookingConflicts(
+  calendarId: string,
+  bookingDate: string,
+  startTime: string,
+  timeSlot: TimeSlot,
+  excludeBookingId?: string,
+): Promise<BookingConflict> {
+  const supabase = await createClient()
+
+  try {
+    // Calculate the actual time range including buffer
+    const startDateTime = new Date(`2000-01-01T${startTime}`)
+    const endDateTime = new Date(startDateTime.getTime() + timeSlot.duration_minutes * 60000)
+    const bufferStartDateTime = new Date(startDateTime.getTime() - timeSlot.buffer_minutes * 60000)
+    const bufferEndDateTime = new Date(endDateTime.getTime() + timeSlot.buffer_minutes * 60000)
+
+    const bufferStartTime = bufferStartDateTime.toTimeString().slice(0, 5)
+    const bufferEndTime = bufferEndDateTime.toTimeString().slice(0, 5)
+
+    // Query for conflicting bookings
+    let query = supabase
+      .from("bookings")
+      .select("id, guest_name, start_time, end_time")
+      .eq("calendar_id", calendarId)
+      .eq("booking_date", bookingDate)
+      .neq("status", "cancelled")
+
+    if (excludeBookingId) {
+      query = query.neq("id", excludeBookingId)
+    }
+
+    const { data: existingBookings, error } = await query
+
+    if (error) {
+      throw error
+    }
+
+    // Check for time conflicts
+    for (const booking of existingBookings || []) {
+      const existingStart = booking.start_time
+      const existingEnd = booking.end_time
+
+      // Check if the new booking (with buffer) overlaps with existing booking
+      const hasOverlap =
+        (bufferStartTime < existingEnd && bufferEndTime > existingStart) ||
+        (existingStart < bufferEndTime && existingEnd > bufferStartTime)
+
+      if (hasOverlap) {
+        return {
+          hasConflict: true,
+          conflictingBooking: booking,
+          message: `This time slot conflicts with an existing booking for ${booking.guest_name} from ${formatTime(existingStart)} to ${formatTime(existingEnd)}.`,
+        }
+      }
+    }
+
+    return { hasConflict: false }
+  } catch (error) {
+    console.error("Error checking booking conflicts:", error)
+    return {
+      hasConflict: true,
+      message: "Unable to verify booking availability. Please try again.",
+    }
+  }
+}
+
+/**
+ * Validate that the booking time falls within the time slot's availability
+ */
+export function validateTimeSlotAvailability(
+  bookingDate: string,
+  startTime: string,
+  timeSlot: TimeSlot,
+): { isValid: boolean; message?: string } {
+  try {
+    const bookingDay = new Date(bookingDate).getDay()
+    const bookingStartTime = startTime
+
+    // Check if the booking time matches the time slot start time
+    if (bookingStartTime !== timeSlot.start_time) {
+      return {
+        isValid: false,
+        message: "Booking time does not match available time slot.",
+      }
+    }
+
+    // Check if booking is not in the past
+    const now = new Date()
+    const bookingDateTime = new Date(`${bookingDate}T${startTime}`)
+
+    if (bookingDateTime <= now) {
+      return {
+        isValid: false,
+        message: "Cannot book appointments in the past.",
+      }
+    }
+
+    // Check if booking is not too far in the future (e.g., 6 months)
+    const sixMonthsFromNow = new Date()
+    sixMonthsFromNow.setMonth(sixMonthsFromNow.getMonth() + 6)
+
+    if (bookingDateTime > sixMonthsFromNow) {
+      return {
+        isValid: false,
+        message: "Cannot book appointments more than 6 months in advance.",
+      }
+    }
+
+    return { isValid: true }
+  } catch (error) {
+    console.error("Error validating time slot availability:", error)
+    return {
+      isValid: false,
+      message: "Invalid booking time format.",
+    }
+  }
+}
+
+/**
+ * Check if a time slot is available on a specific date
+ */
+export async function isTimeSlotAvailable(
   calendarId: string,
   timeSlotId: string,
   bookingDate: string,
   startTime: string,
-  endTime: string,
-  excludeBookingId?: string,
-): Promise<ValidationResult> {
+): Promise<{ available: boolean; message?: string }> {
   const supabase = await createClient()
-  const conflicts: BookingConflict[] = []
 
   try {
-    // Check if booking is in the past
-    const bookingDateTime = new Date(`${bookingDate}T${startTime}`)
-    const now = new Date()
-
-    if (isBefore(bookingDateTime, now)) {
-      conflicts.push({
-        type: "past_booking",
-        message: "Cannot book appointments in the past",
-      })
-    }
-
     // Get the time slot details
     const { data: timeSlot, error: timeSlotError } = await supabase
       .from("time_slots")
       .select("*")
       .eq("id", timeSlotId)
+      .eq("is_active", true)
       .single()
 
     if (timeSlotError || !timeSlot) {
-      conflicts.push({
-        type: "time_slot_unavailable",
-        message: "Time slot not found or unavailable",
-      })
-      return { isValid: false, conflicts }
-    }
-
-    // Check if time slot is active
-    if (!timeSlot.is_active) {
-      conflicts.push({
-        type: "time_slot_unavailable",
-        message: "This time slot is currently unavailable",
-      })
-    }
-
-    // Validate that the booking time falls within the time slot
-    const slotStart = new Date(`2000-01-01T${timeSlot.start_time}`)
-    const slotEnd = new Date(`2000-01-01T${timeSlot.end_time}`)
-    const bookingStart = new Date(`2000-01-01T${startTime}`)
-    const bookingEnd = new Date(`2000-01-01T${endTime}`)
-
-    if (isBefore(bookingStart, slotStart) || isAfter(bookingEnd, slotEnd)) {
-      conflicts.push({
-        type: "time_slot_unavailable",
-        message: "Booking time is outside the available time slot",
-      })
-    }
-
-    // Get existing bookings for the same date and calendar
-    const { data: existingBookings, error: bookingsError } = await supabase
-      .from("bookings")
-      .select(`
-        *,
-        time_slots (
-          buffer_minutes
-        )
-      `)
-      .eq("calendar_id", calendarId)
-      .eq("booking_date", bookingDate)
-      .eq("status", "confirmed")
-      .neq("id", excludeBookingId || "")
-
-    if (bookingsError) {
-      console.error("Error fetching existing bookings:", bookingsError)
-      conflicts.push({
-        type: "overlap",
-        message: "Unable to validate booking conflicts",
-      })
-      return { isValid: false, conflicts }
-    }
-
-    // Check for overlaps and buffer violations
-    const newBookingStart = new Date(`${bookingDate}T${startTime}`)
-    const newBookingEnd = new Date(`${bookingDate}T${endTime}`)
-
-    for (const existingBooking of existingBookings || []) {
-      const existingStart = new Date(`${existingBooking.booking_date}T${existingBooking.start_time}`)
-      const existingEnd = new Date(`${existingBooking.booking_date}T${existingBooking.end_time}`)
-      const bufferMinutes = existingBooking.time_slots?.buffer_minutes || 0
-
-      // Add buffer time to existing booking
-      const existingEndWithBuffer = addMinutes(existingEnd, bufferMinutes)
-      const existingStartWithBuffer = addMinutes(existingStart, -bufferMinutes)
-
-      // Check for direct overlap
-      const hasOverlap =
-        ((isAfter(newBookingStart, existingStart) || isEqual(newBookingStart, existingStart)) &&
-          (isBefore(newBookingStart, existingEnd) || isEqual(newBookingStart, existingEnd))) ||
-        ((isAfter(newBookingEnd, existingStart) || isEqual(newBookingEnd, existingStart)) &&
-          (isBefore(newBookingEnd, existingEnd) || isEqual(newBookingEnd, existingEnd))) ||
-        ((isBefore(newBookingStart, existingStart) || isEqual(newBookingStart, existingStart)) &&
-          (isAfter(newBookingEnd, existingEnd) || isEqual(newBookingEnd, existingEnd)))
-
-      if (hasOverlap) {
-        conflicts.push({
-          type: "overlap",
-          message: `This time slot overlaps with an existing booking at ${existingBooking.start_time}`,
-          conflictingBooking: existingBooking,
-        })
-      }
-
-      // Check for buffer violations
-      const hasBufferViolation =
-        bufferMinutes > 0 &&
-        ((isAfter(newBookingStart, existingStart) && isBefore(newBookingStart, existingEndWithBuffer)) ||
-          (isAfter(newBookingEnd, existingStartWithBuffer) && isBefore(newBookingEnd, existingEnd)) ||
-          (isBefore(newBookingStart, existingStartWithBuffer) && isAfter(newBookingEnd, existingEndWithBuffer)))
-
-      if (hasBufferViolation && !hasOverlap) {
-        conflicts.push({
-          type: "buffer_violation",
-          message: `This booking violates the ${bufferMinutes}-minute buffer time around an existing appointment`,
-          conflictingBooking: existingBooking,
-        })
+      return {
+        available: false,
+        message: "Time slot not found or is inactive.",
       }
     }
 
-    return {
-      isValid: conflicts.length === 0,
-      conflicts,
+    // Validate the booking date and time
+    const validation = validateTimeSlotAvailability(bookingDate, startTime, timeSlot)
+    if (!validation.isValid) {
+      return {
+        available: false,
+        message: validation.message,
+      }
     }
+
+    // Check for conflicts
+    const conflictCheck = await checkBookingConflicts(calendarId, bookingDate, startTime, timeSlot)
+    if (conflictCheck.hasConflict) {
+      return {
+        available: false,
+        message: conflictCheck.message,
+      }
+    }
+
+    return { available: true }
   } catch (error) {
-    console.error("Booking validation error:", error)
+    console.error("Error checking time slot availability:", error)
     return {
-      isValid: false,
-      conflicts: [
-        {
-          type: "overlap",
-          message: "Unable to validate booking due to system error",
-        },
-      ],
+      available: false,
+      message: "Unable to check availability. Please try again.",
     }
   }
 }
 
-export async function validateTimeSlotConflicts(
-  calendarId: string,
-  dayOfWeek: number,
-  startTime: string,
-  endTime: string,
-  excludeSlotId?: string,
-): Promise<ValidationResult> {
-  const supabase = await createClient()
-  const conflicts: BookingConflict[] = []
-
-  try {
-    // Get existing time slots for the same day
-    const { data: existingSlots, error } = await supabase
-      .from("time_slots")
-      .select("*")
-      .eq("calendar_id", calendarId)
-      .eq("day_of_week", dayOfWeek)
-      .eq("is_active", true)
-      .neq("id", excludeSlotId || "")
-
-    if (error) {
-      console.error("Error fetching time slots:", error)
-      conflicts.push({
-        type: "overlap",
-        message: "Unable to validate time slot conflicts",
-      })
-      return { isValid: false, conflicts }
-    }
-
-    const newSlotStart = new Date(`2000-01-01T${startTime}`)
-    const newSlotEnd = new Date(`2000-01-01T${endTime}`)
-
-    // Validate that start time is before end time
-    if (!isBefore(newSlotStart, newSlotEnd)) {
-      conflicts.push({
-        type: "overlap",
-        message: "Start time must be before end time",
-      })
-    }
-
-    // Check for overlaps with existing time slots
-    for (const existingSlot of existingSlots || []) {
-      const existingStart = new Date(`2000-01-01T${existingSlot.start_time}`)
-      const existingEnd = new Date(`2000-01-01T${existingSlot.end_time}`)
-
-      const hasOverlap =
-        ((isAfter(newSlotStart, existingStart) || isEqual(newSlotStart, existingStart)) &&
-          (isBefore(newSlotStart, existingEnd) || isEqual(newSlotStart, existingEnd))) ||
-        ((isAfter(newSlotEnd, existingStart) || isEqual(newSlotEnd, existingStart)) &&
-          (isBefore(newSlotEnd, existingEnd) || isEqual(newSlotEnd, existingEnd))) ||
-        ((isBefore(newSlotStart, existingStart) || isEqual(newSlotStart, existingStart)) &&
-          (isAfter(newSlotEnd, existingEnd) || isEqual(newSlotEnd, existingEnd)))
-
-      if (hasOverlap) {
-        conflicts.push({
-          type: "overlap",
-          message: `This time slot overlaps with an existing slot (${existingSlot.start_time} - ${existingSlot.end_time})`,
-        })
-      }
-    }
-
-    return {
-      isValid: conflicts.length === 0,
-      conflicts,
-    }
-  } catch (error) {
-    console.error("Time slot validation error:", error)
-    return {
-      isValid: false,
-      conflicts: [
-        {
-          type: "overlap",
-          message: "Unable to validate time slot due to system error",
-        },
-      ],
-    }
-  }
+function formatTime(time: string): string {
+  return new Date(`2000-01-01T${time}`).toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  })
 }
