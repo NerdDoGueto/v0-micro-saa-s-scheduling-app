@@ -1,65 +1,103 @@
-import { createClient } from "@/lib/supabase/server"
-import { sendCancellationConfirmation } from "@/lib/email"
-import { NextResponse } from "next/server"
+// app/api/bookings/cancel/[token]/route.ts
+import type { NextRequest } from "next/server";
+import { NextResponse } from "next/server";
 
-export async function GET(request: Request, { params }: { params: Promise<{ token: string }> }) {
-  const { token } = await params
-  const supabase = await createClient()
+export async function GET(request: NextRequest, { params }: { params: { token: string } }) {
+  const token = params.token;
+  if (!token) return NextResponse.json({ error: "Missing token" }, { status: 400 });
+
+  // importe/crie client dentro do handler (evita side effects no build)
+  let createClientFn: typeof import("@/lib/supabase/server").createClient;
+  try {
+    ({ createClient: createClientFn } = await import("@/lib/supabase/server"));
+  } catch (err) {
+    console.error("Import supabase server failed:", err);
+    return NextResponse.json({ error: "Server initialization error" }, { status: 500 });
+  }
+
+  let supabase;
+  try {
+    supabase = await createClientFn();
+  } catch (err) {
+    console.error("Failed to create supabase client:", err);
+    return NextResponse.json({ error: "Database client init failed" }, { status: 500 });
+  }
 
   try {
-    // Find booking by cancellation token
-    const { data: booking, error: findError } = await supabase
+    const { data, error: findError } = await supabase
       .from("bookings")
-      .select("*, calendars(title, user_id, profiles(full_name, email, username))")
+      .select(`
+        *,
+        calendars (
+          id,
+          title,
+          user_id,
+          profiles (
+            id,
+            full_name,
+            email,
+            username
+          )
+        )
+      `)
       .eq("cancellation_token", token)
-      .single()
+      .single();
 
-    if (findError || !booking) {
-      return NextResponse.json({ error: "Booking not found or invalid token" }, { status: 404 })
+    if (findError || !data) {
+      console.warn("Booking not found:", { token, findError });
+      return NextResponse.json({ error: "Booking not found or invalid token" }, { status: 404 });
     }
 
-    // Check if already cancelled
+    const booking = data as any;
     if (booking.status === "cancelled") {
-      return NextResponse.json({ error: "Booking is already cancelled" }, { status: 400 })
+      return NextResponse.json({ error: "Booking is already cancelled" }, { status: 400 });
     }
 
-    // Cancel the booking
     const { error: cancelError } = await supabase
       .from("bookings")
       .update({ status: "cancelled" })
-      .eq("cancellation_token", token)
+      .eq("cancellation_token", token);
 
     if (cancelError) {
-      throw cancelError
+      console.error("Cancel update failed:", cancelError);
+      throw cancelError;
     }
 
+    // normalize relations (Supabase pode devolver arrays dependendo do schema)
+    const calendar = booking.calendars && !Array.isArray(booking.calendars)
+      ? booking.calendars
+      : Array.isArray(booking.calendars) ? booking.calendars[0] : null;
+    const profile = calendar?.profiles && !Array.isArray(calendar.profiles)
+      ? calendar.profiles
+      : Array.isArray(calendar?.profiles) ? calendar.profiles[0] : null;
+
+    // import do email só quando necessário
     try {
+      const { sendCancellationConfirmation } = await import("@/lib/email");
       await sendCancellationConfirmation({
         guestName: booking.guest_name,
         guestEmail: booking.guest_email,
-        calendarTitle: booking.calendars.title,
+        calendarTitle: calendar?.title ?? null,
         bookingDate: booking.booking_date,
         startTime: booking.start_time,
-        hostName: booking.calendars.profiles.full_name || booking.calendars.profiles.username,
-        hostEmail: booking.calendars.profiles.email,
-      })
-    } catch (emailError) {
-      console.error("Failed to send cancellation emails:", emailError)
-      // Don't fail the cancellation if email fails
+        hostName: profile?.full_name ?? profile?.username ?? null,
+        hostEmail: profile?.email ?? null,
+      });
+    } catch (emailErr) {
+      console.error("Email send failed (non-blocking):", emailErr);
     }
 
-    // Return success response with booking details
     return NextResponse.json({
       success: true,
       booking: {
         guest_name: booking.guest_name,
         booking_date: booking.booking_date,
         start_time: booking.start_time,
-        calendar_title: booking.calendars.title,
+        calendar_title: calendar?.title ?? null,
       },
-    })
-  } catch (error) {
-    console.error("Error cancelling booking:", error)
-    return NextResponse.json({ error: "Failed to cancel booking" }, { status: 500 })
+    });
+  } catch (err) {
+    console.error("Error cancelling booking:", err);
+    return NextResponse.json({ error: "Failed to cancel booking" }, { status: 500 });
   }
 }
